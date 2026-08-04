@@ -362,6 +362,7 @@ map.on('load', async () => {
   map.addSource('classified-raster', {
     type: 'raster',
     tiles: ['data/raster_tiles/{z}/{x}/{y}.png'],
+    scheme: 'tms',
     tileSize: 256,
     minzoom: 12,
     maxzoom: 18
