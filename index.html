@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ADU Buildout Viewer</title>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+<style>
+  :root{
+    --ink:#16232F;
+    --ink-2:#1E3244;
+    --blueprint:#4A8FC2;
+    --blueprint-dim:#2E5876;
+    --paper:#F2EEE3;
+    --paper-line:#D8D2BE;
+    --slate:#33404A;
+    --stamp-high:#3F7A4E;
+    --stamp-med:#B2842E;
+    --stamp-low:#8A6A9A;
+    --stamp-none:#A14B3E;
+    --font-display:'Space Grotesk', sans-serif;
+    --font-body:'IBM Plex Sans', sans-serif;
+    --font-mono:'IBM Plex Mono', monospace;
+  }
+  @font-face{font-family:'Space Grotesk';src:local('Space Grotesk');}
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; font-family: var(--font-body); background:var(--ink); }
+
+  #app { position:relative; height:100vh; width:100vw; overflow:hidden; }
+  #map { position:absolute; inset:0; }
+
+  /* ---- Title block header ---- */
+  #titleblock {
+    position:absolute; top:0; left:0; right:0; z-index:5;
+    background: linear-gradient(180deg, var(--ink) 0%, var(--ink-2) 100%);
+    border-bottom: 2px solid var(--blueprint);
+    padding: 14px 20px;
+    display:flex; align-items:center; gap:18px;
+    box-shadow: 0 2px 14px rgba(0,0,0,0.35);
+  }
+  #titleblock .brand {
+    font-family: var(--font-display);
+    color: var(--paper);
+    font-size: 18px;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    border-right: 1px solid var(--blueprint-dim);
+    padding-right: 18px;
+  }
+  #titleblock .brand small{
+    display:block; font-family: var(--font-mono); font-size:10px;
+    color: var(--blueprint); letter-spacing:0.12em; margin-top:2px;
+  }
+  #searchwrap { position:relative; flex:1; max-width:520px; }
+  #addressInput {
+    width:100%; padding:10px 14px; font-family: var(--font-mono); font-size:14px;
+    background: var(--paper); border: 1px solid var(--blueprint-dim); border-radius:2px;
+    color: var(--ink); outline:none;
+  }
+  #addressInput:focus{ border-color: var(--blueprint); box-shadow: 0 0 0 3px rgba(74,143,194,0.25); }
+  #suggestions {
+    position:absolute; top:calc(100% + 4px); left:0; right:0;
+    background: var(--paper); border:1px solid var(--paper-line); border-radius:2px;
+    max-height:220px; overflow-y:auto; z-index:20; display:none;
+  }
+  #suggestions div {
+    padding:8px 12px; font-family: var(--font-mono); font-size:12.5px; color:var(--slate);
+    cursor:pointer; border-bottom:1px solid var(--paper-line);
+  }
+  #suggestions div:hover { background: #E3DFCF; }
+  #searchBtn {
+    font-family: var(--font-mono); font-size:12px; letter-spacing:0.06em;
+    background: var(--blueprint); color: var(--ink); border:none; border-radius:2px;
+    padding:10px 16px; cursor:pointer; text-transform:uppercase;
+  }
+  #searchBtn:hover{ background:#5DA0D6; }
+  #filterToggleBtn {
+    font-family: var(--font-mono); font-size:12px; letter-spacing:0.06em;
+    background: transparent; color: var(--blueprint); border:1px solid var(--blueprint-dim); border-radius:2px;
+    padding:9px 16px; cursor:pointer; text-transform:uppercase;
+  }
+  #filterToggleBtn:hover, #filterToggleBtn.active { background: var(--blueprint-dim); color: var(--paper); }
+  #statusline {
+    font-family: var(--font-mono); font-size:11px; color: var(--blueprint);
+    white-space:nowrap;
+  }
+
+  /* ---- Filter panel ---- */
+  #filterPanel {
+    position:absolute; top:84px; right:16px; z-index:7; width:280px;
+    background: var(--paper); border:1px solid var(--paper-line); border-radius:3px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.4);
+    transform: translateX(120%); transition: transform 0.35s ease;
+    font-family: var(--font-body); max-height: calc(100vh - 110px); overflow-y:auto;
+  }
+  #filterPanel.show { transform: translateX(0); }
+  #filterPanel .filter-head {
+    background: var(--ink); color:var(--paper); padding:10px 14px;
+    display:flex; justify-content:space-between; align-items:center;
+    font-family: var(--font-mono); font-size:11px; letter-spacing:0.05em;
+    position:sticky; top:0;
+  }
+  #filterPanel .filter-head button {
+    background:none; border:none; color:var(--paper); cursor:pointer; font-size:14px; line-height:1; opacity:0.7;
+  }
+  #filterPanel .filter-head button:hover{ opacity:1; }
+  .filter-group { padding:12px 14px; border-bottom:1px dashed var(--paper-line); }
+  .filter-group label.group-label {
+    display:block; font-family:var(--font-mono); font-size:11px; letter-spacing:0.04em;
+    color:var(--slate); text-transform:uppercase; margin-bottom:8px; font-weight:600;
+  }
+  .toggle-row { display:flex; gap:4px; }
+  .toggle-row button {
+    flex:1; padding:6px 4px; font-family:var(--font-mono); font-size:11px;
+    background:#fff; border:1px solid var(--paper-line); border-radius:2px; cursor:pointer; color:var(--slate);
+  }
+  .toggle-row button.active { background: var(--blueprint); border-color: var(--blueprint); color:#fff; }
+  .toggle-row button:hover:not(.active) { background:#E3DFCF; }
+  .range-slider-wrap { position:relative; height:28px; margin-top:6px; }
+  .range-slider-wrap input[type=range] {
+    position:absolute; top:8px; left:0; width:100%; margin:0; pointer-events:none;
+    -webkit-appearance:none; appearance:none; background:transparent;
+  }
+  .range-slider-wrap input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance:none; pointer-events:auto; width:14px; height:14px; border-radius:50%;
+    background: var(--blueprint); cursor:pointer; border:2px solid #fff; box-shadow:0 0 2px rgba(0,0,0,0.4);
+  }
+  .range-slider-wrap input[type=range]::-moz-range-thumb {
+    pointer-events:auto; width:14px; height:14px; border-radius:50%;
+    background: var(--blueprint); cursor:pointer; border:2px solid #fff; box-shadow:0 0 2px rgba(0,0,0,0.4);
+  }
+  .range-slider-wrap input[type=range]::-webkit-slider-runnable-track { height:3px; background:var(--paper-line); }
+  .range-slider-wrap input[type=range]::-moz-range-track { height:3px; background:var(--paper-line); }
+  .range-labels {
+    display:flex; align-items:center; justify-content:space-between; gap:6px;
+    font-family:var(--font-mono); font-size:11px; color:var(--slate); margin-top:6px;
+  }
+  .range-labels span { color:#8a8571; flex-shrink:0; }
+  .range-num-input {
+    width:70px; padding:4px 6px; font-family:var(--font-mono); font-size:11px;
+    background:#fff; border:1px solid var(--paper-line); border-radius:2px; color:var(--slate);
+  }
+  .range-num-input:focus { outline:none; border-color: var(--blueprint); }
+  .district-list { display:flex; flex-direction:column; gap:5px; max-height:150px; overflow-y:auto; }
+  .district-list label {
+    display:flex; align-items:center; gap:7px; font-family:var(--font-mono); font-size:11.5px;
+    color:var(--slate); cursor:pointer;
+  }
+  #filterResetBtn {
+    width: calc(100% - 28px); margin:12px 14px; padding:9px; font-family:var(--font-mono);
+    font-size:11px; letter-spacing:0.05em; text-transform:uppercase; background:transparent;
+    border:1px solid var(--blueprint-dim); color:var(--blueprint-dim); border-radius:2px; cursor:pointer;
+  }
+  #filterResetBtn:hover { background:#E3DFCF; }
+
+  /* ---- Legend ---- */
+  #legend {
+    position:absolute; left:16px; bottom:24px; z-index:5;
+    background: rgba(22,35,47,0.92); border:1px solid var(--blueprint-dim); border-radius:2px;
+    padding:12px 14px; color:var(--paper); font-family:var(--font-mono); font-size:11px;
+    min-width:170px;
+  }
+  #legend h4 { margin:0 0 8px; font-family:var(--font-display); font-size:12px; color:var(--blueprint); font-weight:500;}
+  .legend-row{ display:flex; align-items:center; gap:8px; margin:4px 0;}
+  .swatch{ width:12px; height:12px; border-radius:2px; flex-shrink:0; }
+
+  /* ---- Result / spec-sheet card ---- */
+  #card {
+    position:absolute; top:84px; right:16px; z-index:6; width:300px;
+    background: var(--paper); border:1px solid var(--paper-line); border-radius:3px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.4);
+    transform: translateX(120%); transition: transform 0.35s ease;
+    font-family: var(--font-body);
+  }
+  #card.show { transform: translateX(0); }
+  #card .card-head {
+    background: var(--ink); color:var(--paper); padding:10px 14px;
+    display:flex; justify-content:space-between; align-items:flex-start;
+    font-family: var(--font-mono); font-size:11px; letter-spacing:0.05em;
+  }
+  #card .card-head button {
+    background:none; border:none; color:var(--paper); cursor:pointer; font-size:14px; line-height:1;
+    opacity:0.7;
+  }
+  #card .card-head button:hover{ opacity:1; }
+  #card .addr { padding:12px 14px 4px; font-size:14px; color:var(--slate); font-weight:600; line-height:1.3;}
+  #card .stamp {
+    margin:6px 14px 12px; display:inline-block; padding:4px 10px; border-radius:2px;
+    font-family:var(--font-display); font-size:13px; letter-spacing:0.04em;
+    border:2px solid; transform: rotate(-2deg);
+  }
+  #card .stats { padding:0 14px 14px; }
+  .stat-row {
+    display:flex; justify-content:space-between; padding:6px 0;
+    border-bottom:1px dashed var(--paper-line); font-family:var(--font-mono); font-size:12px;
+  }
+  .stat-row span:first-child{ color:#6b6656; }
+  .stat-row span:last-child{ color:var(--slate); font-weight:600; }
+
+  .maplibregl-popup-content { font-family: var(--font-body); font-size:13px; padding:10px 12px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="titleblock">
+    <div class="brand">ADU BUILDOUT VIEWER<small>PARCEL-LEVEL LAND CAPACITY</small></div>
+    <div id="searchwrap">
+      <input id="addressInput" type="text" placeholder="Type an address" autocomplete="off"/>
+      <div id="suggestions"></div>
+    </div>
+    <button id="searchBtn">Locate</button>
+    <button id="filterToggleBtn">Filters</button>
+    <div id="statusline">Loading parcels…</div>
+  </div>
+
+  <div id="map"></div>
+
+  <div id="legend">
+    <h4 style="display:flex; align-items:center; gap:6px; margin-bottom:8px;">
+      <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-weight:500;">
+        <input type="checkbox" id="rasterToggle" style="accent-color: var(--blueprint);">
+        Land Cover Class
+      </label>
+    </h4>
+    <div style="font-family:var(--font-mono); font-size:9.5px; color:#A9A38D; margin:-4px 0 8px;">(low res to save memory)</div>
+    <div class="legend-row"><div class="swatch" style="background:#FF0000"></div>Building/Structure</div>
+    <div class="legend-row"><div class="swatch" style="background:#00FF00"></div>ILV (grass/lawn)</div>
+    <div class="legend-row"><div class="swatch" style="background:#000000"></div>Impervious (asphalt/concrete)</div>
+    <div class="legend-row"><div class="swatch" style="background:#998C56"></div>NLV/Soil</div>
+    <div class="legend-row"><div class="swatch" style="background:#226622"></div>Trees</div>
+    <div class="legend-row"><div class="swatch" style="background:#0000FF"></div>Water</div>
+    <h4 style="margin-top:12px;">ADU Capable</h4>
+    <div class="legend-row"><div class="swatch" style="background:#3F7A4E"></div>Yes</div>
+    <div class="legend-row"><div class="swatch" style="background:#A14B3E"></div>No</div>
+  </div>
+
+  <div id="filterPanel">
+    <div class="filter-head">
+      <span>FILTERS</span>
+      <button id="filterPanelClose">✕</button>
+    </div>
+
+    <div class="filter-group">
+      <label class="group-label">ADU Capable</label>
+      <div class="toggle-row" data-filter="aduCapable">
+        <button data-value="all" class="active">All</button>
+        <button data-value="yes">Yes</button>
+        <button data-value="no">No</button>
+      </div>
+    </div>
+
+    <div class="filter-group">
+      <label class="group-label">ADU + Rear Parking Capable</label>
+      <div class="toggle-row" data-filter="aduParking">
+        <button data-value="all" class="active">All</button>
+        <button data-value="yes">Yes</button>
+        <button data-value="no">No</button>
+      </div>
+    </div>
+
+    <div class="filter-group">
+      <label class="group-label">Available ADU Space (sq ft)</label>
+      <div class="range-slider-wrap">
+        <input type="range" id="spaceMinSlider">
+        <input type="range" id="spaceMaxSlider">
+      </div>
+      <div class="range-labels">
+        <input type="number" id="spaceMinInput" class="range-num-input">
+        <span>to</span>
+        <input type="number" id="spaceMaxInput" class="range-num-input">
+      </div>
+    </div>
+
+    <div class="filter-group">
+      <label class="group-label">District</label>
+      <div class="district-list" id="districtList"></div>
+    </div>
+
+    <div class="filter-group" style="border-bottom:none;">
+      <label class="group-label">Near Transit or Bike Routes</label>
+      <div class="toggle-row" data-filter="transit">
+        <button data-value="all" class="active">All</button>
+        <button data-value="yes">Yes</button>
+        <button data-value="no">No</button>
+      </div>
+    </div>
+
+    <button id="filterResetBtn">Reset Filters</button>
+  </div>
+
+  <div id="card">
+    <div class="card-head">
+      <span id="cardParcelId">PARCEL —</span>
+      <button id="cardClose">✕</button>
+    </div>
+    <div class="addr" id="cardAddr">—</div>
+    <div class="stamp" id="cardStamp">—</div>
+    <div class="stats" id="cardStats"></div>
+  </div>
+</div>
+
+<script>
+const POTENTIAL_COLOR = { Yes: '#3F7A4E', No: '#A14B3E' };
+
+const LANDCOVER_FIELDS = [
+  ['BuildingSqft', 'Building'], ['GrassSqft', 'Grass'], ['PavedSqft', 'Paved'],
+  ['SoilSqft', 'Soil'], ['TreeSqft', 'Tree'], ['WaterSqft', 'Water']
+];
+
+const map = new maplibregl.Map({
+  container: 'map',
+  style: {
+    version: 8,
+    sources: {
+      basemap: {
+        type: 'raster',
+        tiles: ['https://discover.agrc.utah.gov/login/path/morph-ballad-academy-motel/wmts?SERVICE=WMTS&VERSION=1.0.0&REQUEST=GetTile&LAYER=hybrid_basemap&STYLE=default&FORMAT=image/png&TILEMATRIXSET=0to19&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}'],
+        tileSize: 256,
+        maxzoom: 19
+      }
+    },
+    layers: [
+      { id: 'basemap', type: 'raster', source: 'basemap' }
+    ]
+  },
+  center: [-111.87337, 40.75659],
+  zoom: 16.2,
+  pitch: 0,
+  attributionControl: false
+});
+
+map.addControl(new maplibregl.AttributionControl({
+  customAttribution: 'Imagery: UGRC / Hexagon Content Program' /* TODO: confirm exact required citation wording with UGRC — see note below */
+}));
+
+let parcelData = null;
+
+// normalizes whatever encoding ADU_yn uses (Y/N, Yes/No, 1/0, true/false) to a boolean
+function isADUEligible(value) {
+  const s = String(value).trim().toUpperCase();
+  return s === 'Y' || s === 'YES' || s === '1' || s === 'TRUE';
+}
+
+map.on('load', async () => {
+  const [parcels, bounds] = await Promise.all([
+    fetch('data/parcels.geojson').then(r => r.json()),
+    fetch('data/raster_bounds.json').then(r => r.json())
+  ]);
+
+  // derive clean booleans regardless of how these fields are encoded in the source data
+  parcels.features.forEach(f => {
+    f.properties.adu_eligible = isADUEligible(f.properties.ADU_yn);
+    f.properties.parking_eligible = isADUEligible(f.properties.ADU_backParking);
+    f.properties.transit_eligible = isADUEligible(f.properties.InTransit);
+    f.properties.adu_and_parking_eligible = f.properties.adu_eligible && f.properties.parking_eligible;
+  });
+  parcelData = parcels;
+
+  // insert our overlay layers below the labels layer so place names stay legible on top
+  const firstSymbolId = undefined; // no separate labels layer — hybrid_basemap already bakes labels in
+
+  // classified raster overlay, georeferenced by 4 corner coordinates
+  map.addSource('classified-raster', {
+    type: 'image',
+    url: 'data/raster_overlay.png',
+    coordinates: bounds
+  });
+  map.addLayer({
+    id: 'raster-layer',
+    type: 'raster',
+    source: 'classified-raster',
+    layout: { visibility: 'none' },
+    paint: { 'raster-opacity': 0.85 }
+  }, firstSymbolId);
+
+  // parcel boundaries, colored by ADU eligibility
+  map.addSource('parcels', { type: 'geojson', data: parcels });
+
+  map.addLayer({
+    id: 'parcel-fill',
+    type: 'fill',
+    source: 'parcels',
+    paint: {
+      'fill-color': ['case', ['get', 'adu_eligible'], POTENTIAL_COLOR.Yes, POTENTIAL_COLOR.No],
+      'fill-opacity': 0.16
+    }
+  }, firstSymbolId);
+  map.addLayer({
+    id: 'parcel-outline',
+    type: 'line',
+    source: 'parcels',
+    paint: { 'line-color': '#F5D547', 'line-width': 1.1, 'line-opacity': 0.9 }
+  }, firstSymbolId);
+  map.addLayer({
+    id: 'parcel-highlight',
+    type: 'line',
+    source: 'parcels',
+    filter: ['==', ['get', 'PARCEL_ID'], '__none__'],
+    paint: { 'line-color': '#FFFFFF', 'line-width': 3, 'line-dasharray': [2, 1] }
+  });
+
+  setupFilters(parcels.features);
+
+  map.on('click', 'parcel-fill', (e) => {
+    if (e.features.length) showParcel(e.features[0]);
+  });
+  map.on('mouseenter', 'parcel-fill', () => map.getCanvas().style.cursor = 'pointer');
+  map.on('mouseleave', 'parcel-fill', () => map.getCanvas().style.cursor = '');
+
+  document.getElementById('rasterToggle').addEventListener('change', (e) => {
+    map.setLayoutProperty('raster-layer', 'visibility', e.target.checked ? 'visible' : 'none');
+  });
+});
+
+function showParcel(feature) {
+  const p = feature.properties;
+  map.setFilter('parcel-highlight', ['==', ['get', 'PARCEL_ID'], p.PARCEL_ID]);
+
+  document.getElementById('cardParcelId').textContent = `Parcel ID: ${p.PARCEL_ID}`;
+  document.getElementById('cardAddr').textContent = p.PARCEL_ADD;
+
+  const stamp = document.getElementById('cardStamp');
+  stamp.textContent = p.adu_eligible ? 'ADU CAPABLE' : 'NOT CAPABLE';
+  const c = p.adu_eligible ? POTENTIAL_COLOR.Yes : POTENTIAL_COLOR.No;
+  stamp.style.color = c;
+  stamp.style.borderColor = c;
+  stamp.style.background = c + '18';
+
+  const fmt = (v) => (v === undefined || v === null) ? '—' : Number(v).toLocaleString() + ' sq ft';
+  const landcoverRows = LANDCOVER_FIELDS
+    .map(([field, label]) => `<div class="stat-row"><span>${label}</span><span>${fmt(p[field])}</span></div>`)
+    .join('');
+
+  document.getElementById('cardStats').innerHTML = `
+    <div class="stat-row"><span>Available ADU Space</span><span>${fmt(p.MinADUSpace)}</span></div>
+    <div class="stat-row"><span>Zoning</span><span>${p.ZONING_NAM || p.ZONING || '—'}</span></div>
+    <div class="stat-row"><span>District</span><span>${p.District || '—'}</span></div>
+    <div class="stat-row"><span>Near transit / bike routes</span><span>${isADUEligible(p.InTransit) ? 'Yes' : 'No'}</span></div>
+    <div class="stat-row"><span>Space for rear parking</span><span>${isADUEligible(p.ADU_backParking) ? 'Yes' : 'No'}</span></div>
+    ${landcoverRows}
+  `;
+  document.getElementById('card').classList.add('show');
+
+  const [minX, minY, maxX, maxY] = turf.bbox(feature);
+  map.fitBounds([[minX, minY], [maxX, maxY]], { padding: 160, maxZoom: 19, duration: 900 });
+}
+
+document.getElementById('cardClose').addEventListener('click', () => {
+  document.getElementById('card').classList.remove('show');
+  map.setFilter('parcel-highlight', ['==', ['get', 'PARCEL_ID'], '__none__']);
+});
+
+// ---------------- Address search ----------------
+const input = document.getElementById('addressInput');
+const suggBox = document.getElementById('suggestions');
+
+input.addEventListener('input', () => {
+  const q = input.value.trim().toLowerCase();
+  suggBox.innerHTML = '';
+  if (!q || !parcelData) { suggBox.style.display = 'none'; return; }
+
+  const matches = parcelData.features
+    .filter(f => (f.properties.PARCEL_ADD || '').toLowerCase().includes(q))
+    .slice(0, 6);
+
+  if (!matches.length) { suggBox.style.display = 'none'; return; }
+  matches.forEach(f => {
+    const div = document.createElement('div');
+    div.textContent = f.properties.PARCEL_ADD;
+    div.addEventListener('click', () => {
+      input.value = f.properties.PARCEL_ADD;
+      suggBox.style.display = 'none';
+      showParcel(f);
+    });
+    suggBox.appendChild(div);
+  });
+  suggBox.style.display = 'block';
+});
+
+document.getElementById('searchBtn').addEventListener('click', () => runSearch());
+input.addEventListener('keydown', (e) => { if (e.key === 'Enter') runSearch(); });
+
+async function runSearch() {
+  const q = input.value.trim();
+  if (!q || !parcelData) return;
+  suggBox.style.display = 'none';
+
+  // 1) try a direct local match against parcel address attributes (fast, free, exact)
+  const local = parcelData.features.find(f =>
+    (f.properties.PARCEL_ADD || '').toLowerCase().includes(q.toLowerCase())
+  );
+  if (local) { showParcel(local); return; }
+
+  // 2) fall back to free US Census geocoder, then point-in-polygon against parcels
+  document.getElementById('statusline').textContent = 'Geocoding…';
+  try {
+    const url = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(q)}&benchmark=Public_AR_Current&format=json`;
+    const res = await fetch(url);
+    const json = await res.json();
+    const match = json.result.addressMatches[0];
+    if (!match) { document.getElementById('statusline').textContent = 'Address not found'; return; }
+
+    const pt = turf.point([match.coordinates.x, match.coordinates.y]);
+    const hit = parcelData.features.find(f => turf.booleanPointInPolygon(pt, f));
+    if (hit) {
+      showParcel(hit);
+    } else {
+      map.flyTo({ center: [match.coordinates.x, match.coordinates.y], zoom: 18 });
+      document.getElementById('statusline').textContent = 'Located, but outside parcel coverage';
+    }
+  } catch (err) {
+    document.getElementById('statusline').textContent = 'Geocoding failed — check connection';
+  }
+}
+
+// ---------------- Filters ----------------
+let totalParcelCount = 0;
+
+const filterState = {
+  aduCapable: 'all',      // 'all' | 'yes' | 'no'
+  aduParking: 'all',      // 'all' | 'yes' | 'no'
+  transit: 'all',         // 'all' | 'yes' | 'no'
+  districts: new Set(),   // populated with every district by default
+  spaceMin: 0,
+  spaceMax: 0
+};
+
+function setupFilters(features) {
+  totalParcelCount = features.length;
+
+  // --- Available ADU Space range slider, bounds computed from real data ---
+  const spaceValues = features.map(f => Number(f.properties.MinADUSpace) || 0);
+  const dataMin = Math.floor(Math.min(...spaceValues));
+  const dataMax = Math.ceil(Math.max(...spaceValues));
+
+  const minSlider = document.getElementById('spaceMinSlider');
+  const maxSlider = document.getElementById('spaceMaxSlider');
+  const minInput = document.getElementById('spaceMinInput');
+  const maxInput = document.getElementById('spaceMaxInput');
+  [minSlider, maxSlider].forEach(s => { s.min = dataMin; s.max = dataMax; });
+  [minInput, maxInput].forEach(i => { i.min = dataMin; i.max = dataMax; });
+  minSlider.value = dataMin;
+  maxSlider.value = dataMax;
+  minInput.value = dataMin;
+  maxInput.value = dataMax;
+  filterState.spaceMin = dataMin;
+  filterState.spaceMax = dataMax;
+
+  minSlider.addEventListener('input', () => {
+    if (Number(minSlider.value) > Number(maxSlider.value)) minSlider.value = maxSlider.value;
+    filterState.spaceMin = Number(minSlider.value);
+    minInput.value = filterState.spaceMin;
+    applyFilters();
+  });
+  maxSlider.addEventListener('input', () => {
+    if (Number(maxSlider.value) < Number(minSlider.value)) maxSlider.value = minSlider.value;
+    filterState.spaceMax = Number(maxSlider.value);
+    maxInput.value = filterState.spaceMax;
+    applyFilters();
+  });
+
+  // typed values commit on Enter or on blur, clamped to the valid data range
+  function commitMinInput() {
+    let v = Math.round(Number(minInput.value));
+    if (isNaN(v)) v = dataMin;
+    v = Math.max(dataMin, Math.min(v, filterState.spaceMax));
+    minInput.value = v;
+    minSlider.value = v;
+    filterState.spaceMin = v;
+    applyFilters();
+  }
+  function commitMaxInput() {
+    let v = Math.round(Number(maxInput.value));
+    if (isNaN(v)) v = dataMax;
+    v = Math.min(dataMax, Math.max(v, filterState.spaceMin));
+    maxInput.value = v;
+    maxSlider.value = v;
+    filterState.spaceMax = v;
+    applyFilters();
+  }
+  minInput.addEventListener('change', commitMinInput);
+  maxInput.addEventListener('change', commitMaxInput);
+  minInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { commitMinInput(); minInput.blur(); } });
+  maxInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { commitMaxInput(); maxInput.blur(); } });
+
+  // --- District checkboxes, populated from whatever districts actually appear in the data ---
+  const districts = [...new Set(features.map(f => f.properties.District).filter(Boolean))].sort();
+  const districtList = document.getElementById('districtList');
+  districtList.innerHTML = '';
+  districts.forEach(d => {
+    filterState.districts.add(d);
+    const label = document.createElement('label');
+    label.innerHTML = `<input type="checkbox" checked value="${d}" style="accent-color: var(--blueprint);"> ${d}`;
+    label.querySelector('input').addEventListener('change', (e) => {
+      if (e.target.checked) filterState.districts.add(d); else filterState.districts.delete(d);
+      applyFilters();
+    });
+    districtList.appendChild(label);
+  });
+
+  // --- All/Yes/No toggle button groups ---
+  document.querySelectorAll('.toggle-row').forEach(row => {
+    const key = row.dataset.filter;
+    row.querySelectorAll('button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        row.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        filterState[key] = btn.dataset.value;
+        applyFilters();
+      });
+    });
+  });
+
+  // --- reset ---
+  document.getElementById('filterResetBtn').addEventListener('click', () => {
+    filterState.aduCapable = 'all';
+    filterState.aduParking = 'all';
+    filterState.transit = 'all';
+    filterState.spaceMin = dataMin;
+    filterState.spaceMax = dataMax;
+    minSlider.value = dataMin;
+    maxSlider.value = dataMax;
+    minInput.value = dataMin;
+    maxInput.value = dataMax;
+    document.querySelectorAll('.toggle-row').forEach(row => {
+      row.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.value === 'all'));
+    });
+    districtList.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = true; filterState.districts.add(cb.value); });
+    applyFilters();
+  });
+
+  // --- panel open/close ---
+  document.getElementById('filterToggleBtn').addEventListener('click', () => {
+    document.getElementById('filterPanel').classList.toggle('show');
+    document.getElementById('filterToggleBtn').classList.toggle('active');
+  });
+  document.getElementById('filterPanelClose').addEventListener('click', () => {
+    document.getElementById('filterPanel').classList.remove('show');
+    document.getElementById('filterToggleBtn').classList.remove('active');
+  });
+
+  applyFilters();
+}
+
+function applyFilters() {
+  const clauses = ['all'];
+
+  if (filterState.aduCapable !== 'all') {
+    clauses.push(['==', ['get', 'adu_eligible'], filterState.aduCapable === 'yes']);
+  }
+  if (filterState.aduParking !== 'all') {
+    clauses.push(['==', ['get', 'adu_and_parking_eligible'], filterState.aduParking === 'yes']);
+  }
+  if (filterState.transit !== 'all') {
+    clauses.push(['==', ['get', 'transit_eligible'], filterState.transit === 'yes']);
+  }
+  clauses.push(['>=', ['get', 'MinADUSpace'], filterState.spaceMin]);
+  clauses.push(['<=', ['get', 'MinADUSpace'], filterState.spaceMax]);
+
+  // only restrict by district if not every district is currently selected
+  const allDistrictsSelected = document.querySelectorAll('#districtList input[type=checkbox]:not(:checked)').length === 0;
+  if (!allDistrictsSelected) {
+    clauses.push(['in', ['get', 'District'], ['literal', [...filterState.districts]]]);
+  }
+
+  const filterExpr = clauses.length > 1 ? clauses : null;
+  map.setFilter('parcel-fill', filterExpr);
+  map.setFilter('parcel-outline', filterExpr);
+
+  const visibleCount = filterExpr ? parcelData.features.filter(f => matchesFilter(f.properties)).length : totalParcelCount;
+  document.getElementById('statusline').textContent =
+    visibleCount === totalParcelCount ? `${totalParcelCount} parcels loaded` : `${visibleCount} of ${totalParcelCount} parcels shown`;
+}
+
+// mirrors the MapLibre filter expression in plain JS, just for the status-line count
+function matchesFilter(p) {
+  if (filterState.aduCapable !== 'all' && p.adu_eligible !== (filterState.aduCapable === 'yes')) return false;
+  if (filterState.aduParking !== 'all' && p.adu_and_parking_eligible !== (filterState.aduParking === 'yes')) return false;
+  if (filterState.transit !== 'all' && p.transit_eligible !== (filterState.transit === 'yes')) return false;
+  const space = Number(p.MinADUSpace) || 0;
+  if (space < filterState.spaceMin || space > filterState.spaceMax) return false;
+  if (!filterState.districts.has(p.District)) return false;
+  return true;
+}
+</script>
+</body>
+</html>
